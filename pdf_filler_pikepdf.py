@@ -130,7 +130,17 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
     def collect_fields(field_ref, prefix=''):
         field = field_ref
         field_type = field.get('/FT')
-        field_name = field.get('/T')
+        field_name_raw = field.get('/T')
+        
+        # Convert field name to string (handle String objects and Object references)
+        field_name = None
+        if field_name_raw:
+            if isinstance(field_name_raw, String):
+                field_name = str(field_name_raw)
+            elif hasattr(field_name_raw, '__str__'):
+                field_name = str(field_name_raw)
+            else:
+                field_name = None
         
         if field_type and field_name:
             full_name = f"{prefix}.{field_name}" if prefix else field_name
@@ -140,8 +150,9 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
         kids = field.get('/Kids', [])
         for kid in kids:
             if isinstance(kid, Object):
-                new_prefix = f"{prefix}.{field_name}" if prefix else field_name
-                collect_fields(kid, new_prefix)
+                new_prefix = f"{prefix}.{field_name}" if prefix else (field_name or '')
+                if new_prefix:
+                    collect_fields(kid, new_prefix)
     
     # Collect all form fields
     fields_array = acro_form.get('/Fields', [])
@@ -172,7 +183,9 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
             # Try case-insensitive match
             field_name_lower = field_name.lower()
             for name, ref in form_fields.items():
-                if name.lower() == field_name_lower:
+                # Ensure name is a string before calling .lower()
+                name_str = str(name) if name else ''
+                if name_str.lower() == field_name_lower:
                     field_ref = ref
                     break
         
