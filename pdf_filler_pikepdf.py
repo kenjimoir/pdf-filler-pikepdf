@@ -43,16 +43,35 @@ def ensure_pdf_name(value):
     return Name('/' + value_str)
 
 
-def create_checkbox_appearance(pdf, field, state_name):
+def create_checkbox_appearance(pdf, rect_array, state_name):
     """Create appearance stream for checkbox field"""
     try:
-        # Get field rectangle (bounding box)
-        rect = field.get('/Rect')
-        if not rect or len(rect) < 4:
+        # Ensure rect_array is a list/array with at least 4 elements
+        if not rect_array or len(rect_array) < 4:
             return None
         
-        # Get rectangle coordinates
-        x0, y0, x1, y1 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+        # Extract rectangle coordinates (handle Object references)
+        def get_float_value(val):
+            if isinstance(val, Object):
+                try:
+                    # Try to convert Object to float directly
+                    return float(val)
+                except (TypeError, ValueError):
+                    try:
+                        # Try string conversion
+                        return float(str(val))
+                    except (TypeError, ValueError):
+                        return 0.0
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return 0.0
+        
+        x0 = get_float_value(rect_array[0])
+        y0 = get_float_value(rect_array[1])
+        x1 = get_float_value(rect_array[2])
+        y1 = get_float_value(rect_array[3])
+        
         width = x1 - x0
         height = y1 - y0
         
@@ -118,16 +137,35 @@ Q
         return None
 
 
-def create_radio_appearance(pdf, field, state_name):
+def create_radio_appearance(pdf, rect_array, state_name):
     """Create appearance stream for radio button field"""
     try:
-        # Get field rectangle (bounding box)
-        rect = field.get('/Rect')
-        if not rect or len(rect) < 4:
+        # Ensure rect_array is a list/array with at least 4 elements
+        if not rect_array or len(rect_array) < 4:
             return None
         
-        # Get rectangle coordinates
-        x0, y0, x1, y1 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+        # Extract rectangle coordinates (handle Object references)
+        def get_float_value(val):
+            if isinstance(val, Object):
+                try:
+                    # Try to convert Object to float directly
+                    return float(val)
+                except (TypeError, ValueError):
+                    try:
+                        # Try string conversion
+                        return float(str(val))
+                    except (TypeError, ValueError):
+                        return 0.0
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return 0.0
+        
+        x0 = get_float_value(rect_array[0])
+        y0 = get_float_value(rect_array[1])
+        x1 = get_float_value(rect_array[2])
+        y1 = get_float_value(rect_array[3])
+        
         width = x1 - x0
         height = y1 - y0
         
@@ -401,44 +439,71 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                     field['/AS'] = state_name
                 
                 # Create appearance stream for button fields
-                # Get Rect from field's Kids (annotations) or from field itself
-                rect = None
+                # Get Rect from field's Kids (annotations) or from pages
+                rect_array = None
+                
+                # Method 1: Try to get Rect from field's Kids (annotations)
                 kids = field.get('/Kids', [])
                 if kids and len(kids) > 0:
-                    # Try to get Rect from first annotation
                     for kid in kids:
                         if isinstance(kid, Object):
-                            kid_rect = kid.get('/Rect')
-                            if kid_rect:
-                                rect = kid_rect
+                            try:
+                                kid_dict = kid if isinstance(kid, Dictionary) else kid
+                                kid_rect = kid_dict.get('/Rect')
+                                if kid_rect:
+                                    # Convert to list if it's an Object reference
+                                    if isinstance(kid_rect, Array):
+                                        rect_array = kid_rect
+                                    elif hasattr(kid_rect, '__iter__'):
+                                        rect_array = list(kid_rect)
+                                    if rect_array and len(rect_array) >= 4:
+                                        break
+                            except Exception:
+                                continue
+                
+                # Method 2: Try to get Rect from pages (search for annotation with matching field name)
+                if not rect_array:
+                    field_name_raw = field.get('/T')
+                    field_name_str = str(field_name_raw) if field_name_raw else None
+                    if field_name_str:
+                        for page in pdf.pages:
+                            annots = page.get('/Annots', [])
+                            if not annots:
+                                continue
+                            for annot in annots:
+                                if isinstance(annot, Object):
+                                    try:
+                                        annot_dict = annot if isinstance(annot, Dictionary) else annot
+                                        annot_field_name = annot_dict.get('/T')
+                                        if annot_field_name and str(annot_field_name) == field_name_str:
+                                            annot_rect = annot_dict.get('/Rect')
+                                            if annot_rect:
+                                                if isinstance(annot_rect, Array):
+                                                    rect_array = annot_rect
+                                                elif hasattr(annot_rect, '__iter__'):
+                                                    rect_array = list(annot_rect)
+                                                if rect_array and len(rect_array) >= 4:
+                                                    break
+                                    except Exception:
+                                        continue
+                            if rect_array:
                                 break
                 
-                # If no Rect from Kids, try field itself
-                if not rect:
-                    rect = field.get('/Rect')
-                
                 # If we have Rect, create appearance
-                if rect and len(rect) >= 4:
-                    # Temporarily set Rect on field for appearance creation
-                    original_rect = field.get('/Rect')
-                    if not original_rect:
-                        field['/Rect'] = rect
-                    
+                if rect_array and len(rect_array) >= 4:
                     try:
                         if is_checkbox:
-                            appearance = create_checkbox_appearance(pdf, field, state_name)
+                            appearance = create_checkbox_appearance(pdf, rect_array, state_name)
                         else:
-                            appearance = create_radio_appearance(pdf, field, state_name)
+                            appearance = create_radio_appearance(pdf, rect_array, state_name)
                         
                         if appearance:
                             field['/AP'] = appearance
                             print(f"✅ Created appearance for {field_name}")
                     except Exception as e:
                         print(f"⚠️  Could not create appearance for {field_name}: {e}")
-                    
-                    # Restore original Rect if we modified it
-                    if not original_rect and '/Rect' in field:
-                        del field['/Rect']
+                        import traceback
+                        traceback.print_exc()
                 else:
                     # No Rect available, remove /AP to let viewer regenerate
                     if '/AP' in field:
