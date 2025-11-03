@@ -235,7 +235,33 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                         ww["/AS"] = on_name if ww is widget else Name("/Off")
                     filled += 1
                 else:
-                    skipped.append(raw_name)
+                    # Try fallback: use value directly as name if widgets have /AP
+                    # Some PDFs may not have matching keys, so we try to set the value directly
+                    value_str = str(value).strip().lower().lstrip("/")
+                    fallback_name = ensure_name(value_str)
+                    
+                    # Check if any widget has /AP with this key
+                    found_widget = None
+                    for ww in widgets:
+                        ap = ww.get("/AP")
+                        if ap:
+                            apN = ap.get("/N")
+                            if apN:
+                                try:
+                                    keys = list(apN.keys())
+                                    if fallback_name in keys:
+                                        found_widget = ww
+                                        break
+                                except Exception:
+                                    pass
+                    
+                    if found_widget:
+                        field_dict["/V"] = fallback_name
+                        for ww in widgets:
+                            ww["/AS"] = fallback_name if ww is found_widget else Name("/Off")
+                        filled += 1
+                    else:
+                        skipped.append(raw_name)
                 continue
             
             # Checkbox
