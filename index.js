@@ -118,11 +118,13 @@ async function fillPdf(srcPath, outPath, fields = {}) {
   
   const bytes = fs.readFileSync(srcPath);
   
-  // CRITICAL: updateFieldAppearances: true ensures appearances are generated on load
-  const pdfDoc = await PDFDocument.load(bytes, { updateFieldAppearances: true });
+  // IMPORTANT: Don't update appearances on load - we'll do it selectively
+  // This preserves template fonts for Japanese text
+  const pdfDoc = await PDFDocument.load(bytes, { updateFieldAppearances: false });
   
   let filled = 0;
   let form = null;
+  const buttonFields = []; // Track button fields for appearance update
   
   try {
     form = pdfDoc.getForm();
@@ -138,19 +140,23 @@ async function fillPdf(srcPath, outPath, fields = {}) {
         const val = rawVal == null ? '' : String(rawVal);
         
         if (typeName.includes('Text')) {
+          // Text fields: just set value, preserve template appearance/fonts
           f.setText(val);
           filled++;
         } else if (typeName.includes('Check')) {
+          // Button fields: set value and track for appearance update
           const on = val.toLowerCase();
           if (on === 'true' || on === 'yes' || on === '1' || on === 'on') {
             f.check();
           } else {
             f.uncheck();
           }
+          buttonFields.push(f);
           filled++;
         } else if (typeName.includes('Radio')) {
           try {
             f.select(val);
+            buttonFields.push(f);
             filled++;
           } catch (_) {
             // Radio value not found - skip
@@ -168,12 +174,24 @@ async function fillPdf(srcPath, outPath, fields = {}) {
       }
     }
     
-    // CRITICAL: Update field appearances after setting all values
-    // This ensures checkboxes/radios are visually displayed
-    try {
-      form.updateFieldAppearances();
-    } catch (e) {
-      log('⚠️  updateFieldAppearances failed:', e.message);
+    // Update appearances ONLY for button fields (checkboxes/radios)
+    // This avoids font encoding issues with Japanese text in text fields
+    if (buttonFields.length > 0) {
+      try {
+        // Update appearances for button fields only
+        // pdf-lib doesn't have a direct API for this, so we'll update all fields
+        // but catch errors for text fields
+        for (const field of buttonFields) {
+          try {
+            field.updateAppearances();
+          } catch (e) {
+            // Ignore errors for individual fields
+            log(`⚠️  Failed to update appearance for field: ${field.getName()}`);
+          }
+        }
+      } catch (e) {
+        log('⚠️  updateFieldAppearances failed:', e.message);
+      }
     }
   }
   
@@ -218,7 +236,7 @@ app.get('/fields', async (req, res) => {
     await downloadDriveFile(fileId, localPath);
     
     const bytes = fs.readFileSync(localPath);
-    const pdfDoc = await PDFDocument.load(bytes);
+    const pdfDoc = await PDFDocument.load(bytes, { updateFieldAppearances: false });
     
     let names = [];
     try {
