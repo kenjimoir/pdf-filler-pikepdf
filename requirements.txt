@@ -1,0 +1,6 @@
+# Python requirements for pikepdf PDF filler
+# This is used when deploying to platforms that support Python
+# Note: For Docker deployments, dependencies are installed via Dockerfile
+
+pikepdf>=8.0.0
+
