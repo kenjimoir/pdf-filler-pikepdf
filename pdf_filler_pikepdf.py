@@ -253,57 +253,44 @@ Q
 
 def check_and_fix_appearances(pdf):
     """
-    Check for missing /AP (Appearance) dictionaries in form fields
-    and regenerate them if needed.
+    Check for missing /AP (Appearance) dictionaries in annotations (following IT consultant's advice).
+    Check annotations on pages, not fields directly.
     Returns tuple: (needs_fix, fixed_count)
     """
     try:
-        if not pdf.Root.get('/AcroForm'):
-            return False, 0
-        
-        acro_form = pdf.Root.AcroForm
-        if not acro_form:
-            return False, 0
-        
-        fields = acro_form.get('/Fields', [])
-        if not fields:
-            return False, 0
-        
         needs_fix = False
         fixed_count = 0
         
-        # Traverse all fields recursively
-        def check_field(field_ref):
-            nonlocal needs_fix, fixed_count
-            field = field_ref
+        # IT顧問のアドバイスに従い、ページ上のアノテーションをチェック
+        for page_num, page in enumerate(pdf.pages):
+            annots = page.get('/Annots', [])
+            if not annots:
+                continue
             
-            # Check if this is a terminal field (not a parent)
-            field_type = field.get('/FT')
-            if field_type:  # Field Type exists
-                # Check for missing /AP (Appearance)
-                if '/AP' not in field:
-                    field_name = field.get('/T', 'unknown')
-                    if isinstance(field_name, String):
-                        field_name = str(field_name)
-                    needs_fix = True
-                    print(f"⚠️  Field missing /AP: {field_name}")
-                    
-                    # For buttons (checkboxes/radio), we need to regenerate appearance
-                    if field_type == Name('/Btn'):
-                        # Try to regenerate appearance by setting NeedAppearances flag
-                        needs_fix = True
-                        fixed_count += 1
-            
-            # Check children (for non-terminal fields)
-            kids = field.get('/Kids', [])
-            for kid in kids:
-                if isinstance(kid, Object):
-                    check_field(kid)
-        
-        # Process all root-level fields
-        for field_ref in fields:
-            if isinstance(field_ref, Object):
-                check_field(field_ref)
+            for annot in annots:
+                if isinstance(annot, Object):
+                    try:
+                        # Check if this annotation is a form field annotation
+                        annot_subtype = annot.get('/Subtype')
+                        if annot_subtype != Name('/Widget'):
+                            continue  # Skip non-form-field annotations
+                        
+                        # Check for missing /AP (Appearance) - IT顧問のアドバイス通り
+                        if '/AP' not in annot:
+                            annot_field_name = annot.get('/T', 'unknown')
+                            if isinstance(annot_field_name, String):
+                                annot_field_name = str(annot_field_name)
+                            elif annot_field_name:
+                                annot_field_name = str(annot_field_name)
+                            else:
+                                annot_field_name = f'Page{page_num + 1}_Annot{fixed_count}'
+                            
+                            needs_fix = True
+                            fixed_count += 1
+                            print(f"⚠️  Annotation missing /AP: {annot_field_name}")
+                    except Exception as e:
+                        # Skip annotations that can't be processed
+                        continue
         
         return needs_fix, fixed_count
         
@@ -471,87 +458,9 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                     field['/V'] = state_name
                     field['/AS'] = state_name
                 
-                # Create appearance stream for button fields
-                # Get Rect from field's Kids (annotations) or from pages
-                rect_array = None
-                
-                # Method 1: Try to get Rect from field's Kids (annotations)
-                kids = field.get('/Kids', [])
-                if kids and len(kids) > 0:
-                    for kid in kids:
-                        if isinstance(kid, Object):
-                            try:
-                                kid_dict = kid if isinstance(kid, Dictionary) else kid
-                                kid_rect = kid_dict.get('/Rect')
-                                if kid_rect:
-                                    # Convert to list if it's an Object reference
-                                    if isinstance(kid_rect, Array):
-                                        rect_array = kid_rect
-                                    elif hasattr(kid_rect, '__iter__'):
-                                        rect_array = list(kid_rect)
-                                    if rect_array and len(rect_array) >= 4:
-                                        break
-                            except Exception:
-                                continue
-                
-                # Method 2: Try to get Rect from pages (search for annotation with matching field name)
-                if not rect_array:
-                    field_name_raw = field.get('/T')
-                    field_name_str = str(field_name_raw) if field_name_raw else None
-                    if field_name_str:
-                        for page in pdf.pages:
-                            annots = page.get('/Annots', [])
-                            if not annots:
-                                continue
-                            for annot in annots:
-                                if isinstance(annot, Object):
-                                    try:
-                                        annot_dict = annot if isinstance(annot, Dictionary) else annot
-                                        annot_field_name = annot_dict.get('/T')
-                                        if annot_field_name and str(annot_field_name) == field_name_str:
-                                            annot_rect = annot_dict.get('/Rect')
-                                            if annot_rect:
-                                                if isinstance(annot_rect, Array):
-                                                    rect_array = annot_rect
-                                                elif hasattr(annot_rect, '__iter__'):
-                                                    rect_array = list(annot_rect)
-                                                if rect_array and len(rect_array) >= 4:
-                                                    break
-                                    except Exception:
-                                        continue
-                            if rect_array:
-                                break
-                
-                # If we have Rect, create appearance
-                if rect_array and len(rect_array) >= 4:
-                    try:
-                        if is_checkbox:
-                            appearance = create_checkbox_appearance(pdf, rect_array, state_name)
-                        else:
-                            appearance = create_radio_appearance(pdf, rect_array, state_name)
-                        
-                        if appearance:
-                            # Set /AP dictionary directly
-                            # Get the stream from appearance dict
-                            appearance_stream = appearance[Name('/N')]
-                            
-                            # Create or update /AP dictionary step by step
-                            # Don't delete existing /AP - it may contain other appearance states
-                            if '/AP' not in field:
-                                # Create new /AP dictionary
-                                field['/AP'] = {}
-                            
-                            # Set /N (Normal appearance) for the current state
-                            field['/AP'][Name('/N')] = appearance_stream
-                            print(f"✅ Created appearance for {field_name}")
-                    except Exception as e:
-                        print(f"⚠️  Could not create appearance for {field_name}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                else:
-                    # No Rect available, remove /AP to let viewer regenerate
-                    if '/AP' in field:
-                        del field['/AP']
+                # IT顧問のアドバイスに従い、手動でAppearanceを生成しない
+                # 代わりに、NeedAppearancesフラグを設定してPDFビューアーに自動生成させる
+                # アノテーションはフィールド埋め込み後にチェックする
                 
                 filled_count += 1
                 
