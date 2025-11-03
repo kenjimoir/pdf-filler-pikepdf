@@ -32,6 +32,17 @@ def utf16_hex_encode(text):
         return String(text)
 
 
+def ensure_pdf_name(value):
+    """Ensure a value is a valid PDF Name object (must start with '/')"""
+    if not value:
+        return Name('/Off')
+    value_str = str(value).strip()
+    # Remove leading '/' if present, then add it back to ensure consistency
+    value_str = value_str.lstrip('/')
+    # PDF Name objects must start with '/'
+    return Name('/' + value_str)
+
+
 def check_and_fix_appearances(pdf):
     """
     Check for missing /AP (Appearance) dictionaries in form fields
@@ -232,17 +243,18 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                                     on_value = str(opt_val)
                                 elif isinstance(opt_val, Array) and len(opt_val) > 0:
                                     on_value = str(opt_val[0])
-                        field['/V'] = Name(on_value)
-                        field['/AS'] = Name(on_value)
+                        # Ensure Name object starts with '/'
+                        field['/V'] = ensure_pdf_name(on_value)
+                        field['/AS'] = ensure_pdf_name(on_value)
                     else:
-                        field['/V'] = Name('Off')
-                        field['/AS'] = Name('Off')
+                        field['/V'] = ensure_pdf_name('Off')
+                        field['/AS'] = ensure_pdf_name('Off')
                 else:
                     # Radio button - value should match export value (convert to name)
-                    # Use value as-is but ensure it's a Name object
+                    # Use value as-is but ensure it's a Name object starting with '/'
                     export_value = value_str
-                    field['/V'] = Name(export_value)
-                    field['/AS'] = Name(export_value)
+                    field['/V'] = ensure_pdf_name(export_value)
+                    field['/AS'] = ensure_pdf_name(export_value)
                 
                 # Remove /AP to force regeneration
                 if '/AP' in field:
