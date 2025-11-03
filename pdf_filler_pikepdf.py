@@ -125,15 +125,30 @@ Q
 """
         
         # Create appearance dictionary
-        appearance_stream = pdf.make_stream(stream_content.encode('latin-1'))
-        appearance_dict = Dictionary({
-            Name('/N'): appearance_stream  # Normal appearance
-        })
-        
-        return appearance_dict
+        try:
+            # Create stream content as bytes
+            stream_bytes = stream_content.encode('latin-1')
+            
+            # Create stream object using pikepdf's make_stream
+            appearance_stream = pdf.make_stream(stream_bytes)
+            
+            # Create appearance dictionary (use dict instead of Dictionary)
+            appearance_dict = {
+                Name('/N'): appearance_stream  # Normal appearance
+            }
+            
+            return appearance_dict
+            
+        except Exception as stream_error:
+            print(f"⚠️  Error creating checkbox stream: {stream_error}")
+            import traceback
+            traceback.print_exc()
+            return None
         
     except Exception as e:
         print(f"⚠️  Error creating checkbox appearance: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -205,15 +220,30 @@ Q
 """
         
         # Create appearance dictionary
-        appearance_stream = pdf.make_stream(stream_content.encode('latin-1'))
-        appearance_dict = Dictionary({
-            Name('/N'): appearance_stream  # Normal appearance
-        })
-        
-        return appearance_dict
+        try:
+            # Create stream content as bytes
+            stream_bytes = stream_content.encode('latin-1')
+            
+            # Create stream object using pikepdf's make_stream
+            appearance_stream = pdf.make_stream(stream_bytes)
+            
+            # Create appearance dictionary (use dict instead of Dictionary)
+            appearance_dict = {
+                Name('/N'): appearance_stream  # Normal appearance
+            }
+            
+            return appearance_dict
+            
+        except Exception as stream_error:
+            print(f"⚠️  Error creating radio stream: {stream_error}")
+            import traceback
+            traceback.print_exc()
+            return None
         
     except Exception as e:
         print(f"⚠️  Error creating radio appearance: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
