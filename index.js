@@ -6,11 +6,44 @@ const os = require('os');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const { google } = require('googleapis');
 
 const execAsync = promisify(exec);
+
+// Execute command with arguments array (safer than shell string)
+function execAsyncArray(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`Command failed with code ${code}: ${stderr}`));
+      }
+    });
+    
+    proc.on('error', (error) => {
+      reject(error);
+    });
+  });
+}
 
 // Render.com uses port 10000 by default, Railway uses dynamic port
 const PORT = process.env.PORT || 8080;
@@ -77,13 +110,12 @@ async function fillPdfWithPikepdf(templatePath, outputPath, fields, opts) {
   console.log(`   Fields: ${Object.keys(fields).length}`);
   
   try {
-    // Prepare fields JSON (escape for shell)
-    const fieldsJson = JSON.stringify(fields).replace(/"/g, '\\"');
+    // Prepare fields JSON (as string, will be passed as argument)
+    const fieldsJson = JSON.stringify(fields);
     
-    // Build Python command
+    // Build Python command arguments array (safer than shell string)
     const pythonScript = path.join(__dirname, 'pdf_filler_pikepdf.py');
     const cmdArgs = [
-      'python3',
       pythonScript,
       templatePath,
       outputPath,
@@ -100,17 +132,10 @@ async function fillPdfWithPikepdf(templatePath, outputPath, fields, opts) {
       cmdArgs.push('--flatten');
     }
     
-    const cmd = cmdArgs.map(arg => {
-      // Quote arguments that contain spaces or special characters
-      if (arg.includes(' ') || arg.includes('"') || arg.includes("'")) {
-        return `"${arg.replace(/"/g, '\\"')}"`;
-      }
-      return arg;
-    }).join(' ');
-    
     console.log(`🔧 Running: python3 pdf_filler_pikepdf.py [template] [output] --fields [JSON]`);
     
-    const { stdout, stderr } = await execAsync(cmd, {
+    // Use spawn with array arguments (safer for special characters)
+    const { stdout, stderr } = await execAsyncArray('python3', cmdArgs, {
       maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large outputs
     });
     
