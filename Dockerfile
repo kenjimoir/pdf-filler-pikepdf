@@ -1,5 +1,16 @@
 FROM node:18
 
+# Install Python 3 and pip for pikepdf
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip and install pikepdf
+# Use --break-system-packages flag for Docker container (safe in containers)
+RUN python3 -m pip install --upgrade pip --break-system-packages && \
+    python3 -m pip install pikepdf --break-system-packages
+
 # Set working directory
 WORKDIR /app
 
@@ -11,6 +22,9 @@ RUN npm install
 
 # Copy source code
 COPY . .
+
+# Make Python script executable
+RUN chmod +x pdf_filler_pikepdf.py
 
 # Expose port (Render.com uses 10000, Railway uses dynamic port)
 # Use environment variable PORT or default to 8080

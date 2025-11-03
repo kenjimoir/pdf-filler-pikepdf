@@ -1,16 +1,17 @@
-// PDF Filler using pdf-lib - Reliable Japanese text support with automatic appearance updates
-// Based on school application form approach - proven to work without appearance issues
+// PDF Filler using pikepdf - Set values only, preserve template fonts and appearances
+// This approach sets /V and /AS without updating appearances, letting PDF viewer handle display
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
-const { PDFDocument } = require('pdf-lib');
+const { spawn } = require('child_process');
+const { promisify } = require('util');
 const { google } = require('googleapis');
 
 const PORT = process.env.PORT || 8080;
-const TMP = path.join(os.tmpdir(), 'pdf-filler-pdflib');
+const TMP = path.join(os.tmpdir(), 'pdf-filler-pikepdf');
 const OUTPUT_FOLDER_ID = process.env.OUTPUT_FOLDER_ID || '';
 
 // Ensure temp directory exists
@@ -25,10 +26,41 @@ function log(...args) {
   console.log(new Date().toISOString(), '-', ...args);
 }
 
+// Execute command with arguments array (safer than shell string)
+function execAsyncArray(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`Command failed with code ${code}: ${stderr}`));
+      }
+    });
+    
+    proc.on('error', (error) => {
+      reject(error);
+    });
+  });
+}
+
 // ---- Google Drive client (supports Shared Drives) ----
 function getDriveClient() {
-  // Option A: GOOGLE_CREDENTIALS_JSON (paste JSON into Render env var)
-  // Option B: GOOGLE_APPLICATION_CREDENTIALS (path to a mounted JSON file)
   let credentials = null;
   
   if (process.env.GOOGLE_CREDENTIALS_JSON) {
@@ -86,12 +118,6 @@ async function downloadDriveFile(fileId, destPath) {
 }
 
 async function uploadToDrive(localPath, name, parentId) {
-  /**
-   * Upload localPath to Drive.
-   * - If parentId is provided (from request), it is used.
-   * - Else if OUTPUT_FOLDER_ID env is set, it is used.
-   * - Else it uploads to My Drive root of the service account.
-   */
   const drive = getDriveClient();
   
   const parents =
@@ -112,95 +138,69 @@ async function uploadToDrive(localPath, name, parentId) {
   return res.data;
 }
 
-// ---- PDF fill (handles text / checkbox / radio / dropdown) ----
+// ---- PDF fill using pikepdf - Set values only, preserve template appearances ----
 async function fillPdf(srcPath, outPath, fields = {}) {
   log('📝 Filling PDF with', Object.keys(fields).length, 'fields');
   
-  const bytes = fs.readFileSync(srcPath);
+  const pythonScript = path.join(__dirname, 'pdf_filler_pikepdf.py');
+  const fieldsJson = JSON.stringify(fields);
   
-  // IMPORTANT: Don't update appearances on load - we'll do it selectively
-  // This preserves template fonts for Japanese text
-  const pdfDoc = await PDFDocument.load(bytes, { updateFieldAppearances: false });
+  const cmdArgs = [
+    pythonScript,
+    srcPath,
+    outPath,
+    '--fields', fieldsJson
+  ];
   
-  let filled = 0;
-  let form = null;
-  const buttonFields = []; // Track button fields for appearance update
+  log('🔧 Running: python3 pdf_filler_pikepdf.py [template] [output] --fields [JSON]');
   
   try {
-    form = pdfDoc.getForm();
-  } catch (_) {
-    log('⚠️  PDF has no form fields');
-  }
-  
-  if (form) {
-    for (const [key, rawVal] of Object.entries(fields)) {
+    const { stdout, stderr } = await execAsyncArray('python3', cmdArgs, {
+      maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+    });
+    
+    if (stdout) {
+      console.log(`📊 pikepdf output: ${stdout.trim()}`);
       try {
-        const f = form.getField(String(key));
-        const typeName = (f && f.constructor && f.constructor.name) || '';
-        const val = rawVal == null ? '' : String(rawVal);
-        
-        if (typeName.includes('Text')) {
-          // Text fields: just set value, preserve template appearance/fonts
-          f.setText(val);
-          filled++;
-        } else if (typeName.includes('Check')) {
-          // Button fields: set value and track for appearance update
-          const on = val.toLowerCase();
-          if (on === 'true' || on === 'yes' || on === '1' || on === 'on') {
-            f.check();
-          } else {
-            f.uncheck();
-          }
-          buttonFields.push(f);
-          filled++;
-        } else if (typeName.includes('Radio')) {
-          try {
-            f.select(val);
-            buttonFields.push(f);
-            filled++;
-          } catch (_) {
-            // Radio value not found - skip
-          }
-        } else if (typeName.includes('Dropdown')) {
-          try {
-            f.select(val);
-            filled++;
-          } catch (_) {
-            // Dropdown value not found - skip
-          }
+        const result = JSON.parse(stdout.split('\n').filter(l => l.trim().startsWith('{')).pop() || '{}');
+        if (result.filled_count !== undefined) {
+          log(`✅ Filled ${result.filled_count} fields`);
         }
-      } catch (_) {
-        // Field not found — ignore missing field
+      } catch (e) {
+        // Ignore JSON parse errors
       }
     }
     
-    // Update appearances ONLY for button fields (checkboxes/radios)
-    // This avoids font encoding issues with Japanese text in text fields
-    if (buttonFields.length > 0) {
-      try {
-        // Update appearances for button fields only
-        // pdf-lib doesn't have a direct API for this, so we'll update all fields
-        // but catch errors for text fields
-        for (const field of buttonFields) {
-          try {
-            field.updateAppearances();
-          } catch (e) {
-            // Ignore errors for individual fields
-            log(`⚠️  Failed to update appearance for field: ${field.getName()}`);
-          }
-        }
-      } catch (e) {
-        log('⚠️  updateFieldAppearances failed:', e.message);
-      }
+    if (stderr && !stderr.includes('⚠️')) {
+      console.warn(`⚠️  pikepdf stderr: ${stderr}`);
     }
+    
+    if (!fs.existsSync(outPath)) {
+      throw new Error('Output file was not created');
+    }
+    
+    const outputSize = fs.statSync(outPath).size;
+    log(`✅ PDF filled successfully`);
+    log(`   Output size: ${outputSize} bytes`);
+    
+    return { outPath, filled: Object.keys(fields).length, size: outputSize };
+    
+  } catch (error) {
+    log(`❌ pikepdf error: ${error.message}`);
+    throw new Error(`pikepdf failed: ${error.message}`);
   }
-  
-  const outBytes = await pdfDoc.save();
-  fs.writeFileSync(outPath, outBytes);
-  
-  log(`✅ Filled ${filled} fields, output size: ${outBytes.length} bytes`);
-  
-  return { outPath, filled, size: outBytes.length };
+}
+
+// Check if pikepdf (Python) is available
+async function checkPikepdf() {
+  try {
+    const { stdout } = await execAsyncArray('python3', ['-c', 'import pikepdf; print(pikepdf.__version__)']);
+    log(`✅ pikepdf found: ${stdout.trim()}`);
+    return true;
+  } catch (error) {
+    log(`❌ pikepdf not found: ${error.message}`);
+    return false;
+  }
 }
 
 // ---- HTTP server ----
@@ -212,10 +212,12 @@ app.get('/', (req, res) => {
   res.type('text/plain').send('PDF filler is up. Try GET /health');
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const pikepdfAvailable = await checkPikepdf();
   res.json({
     ok: true,
-    method: 'pdf-lib',
+    method: 'pikepdf',
+    pikepdfAvailable,
     tmpDir: TMP,
     hasOUTPUT_FOLDER_ID: !!OUTPUT_FOLDER_ID,
     credMode: process.env.GOOGLE_CREDENTIALS_JSON
@@ -235,16 +237,22 @@ app.get('/fields', async (req, res) => {
     const localPath = path.join(TMP, `template_${fileId}.pdf`);
     await downloadDriveFile(fileId, localPath);
     
-    const bytes = fs.readFileSync(localPath);
-    const pdfDoc = await PDFDocument.load(bytes, { updateFieldAppearances: false });
+    // Use pikepdf to list fields
+    const pythonScript = path.join(__dirname, 'pdf_filler_pikepdf.py');
+    const { stdout } = await execAsyncArray('python3', [
+      pythonScript,
+      localPath,
+      '/dev/null', // dummy output
+      '--fields', '{}',
+      '--list-fields'
+    ]);
     
     let names = [];
     try {
-      const form = pdfDoc.getForm();
-      const fields = form ? form.getFields() : [];
-      names = fields.map(f => f.getName());
+      const result = JSON.parse(stdout.split('\n').filter(l => l.trim().startsWith('{')).pop() || '{}');
+      names = result.field_names || [];
     } catch (_) {
-      // No form fields
+      // Ignore parse errors
     }
     
     res.json({ count: names.length, names });
@@ -266,6 +274,15 @@ app.post('/fill', async (req, res) => {
     
     if (!fields) {
       return res.status(400).json({ error: 'fields is required' });
+    }
+    
+    // Check if pikepdf is available
+    const pikepdfAvailable = await checkPikepdf();
+    if (!pikepdfAvailable) {
+      return res.status(500).json({ 
+        error: 'pikepdf not available', 
+        detail: 'pikepdf (Python) is required but not installed on this system' 
+      });
     }
     
     // 1) Download template → 2) Fill → 3) Upload to Drive

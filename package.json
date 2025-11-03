@@ -1,7 +1,7 @@
 {
-  "name": "pdf-filler-pdflib",
+  "name": "pdf-filler-pikepdf",
   "version": "1.0.0",
-  "description": "PDF Filler using pdf-lib for reliable Japanese text support with automatic appearance updates",
+  "description": "PDF Filler using pikepdf - Set values only, preserve template fonts and appearances",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -10,13 +10,12 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "googleapis": "^126.0.1",
-    "pdf-lib": "^1.17.1"
+    "googleapis": "^126.0.1"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": ["pdf", "pdf-lib", "form", "filler", "japanese"],
+  "keywords": ["pdf", "pikepdf", "form", "filler", "japanese"],
   "author": "PDF Filler Service",
   "license": "MIT"
 }
