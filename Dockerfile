@@ -8,8 +8,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and install pikepdf
-RUN python3 -m pip install --upgrade pip && \
-    python3 -m pip install pikepdf
+# Use --break-system-packages flag for Docker container (safe in containers)
+RUN python3 -m pip install --upgrade pip --break-system-packages && \
+    python3 -m pip install pikepdf --break-system-packages
 
 # Set working directory
 WORKDIR /app
