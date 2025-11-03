@@ -1,7 +1,7 @@
 {
-  "name": "pdf-filler-pdftk",
+  "name": "pdf-filler-pdflib",
   "version": "1.0.0",
-  "description": "PDF Filler using PDFtk for reliable Japanese text support",
+  "description": "PDF Filler using pdf-lib for reliable Japanese text support with automatic appearance updates",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -11,14 +11,12 @@
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "googleapis": "^126.0.1",
-    "fs": "^0.0.1-security",
-    "path": "^0.12.7",
-    "os": "^0.1.2"
+    "pdf-lib": "^1.17.1"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": ["pdf", "pdftk", "form", "filler", "japanese"],
+  "keywords": ["pdf", "pdf-lib", "form", "filler", "japanese"],
   "author": "PDF Filler Service",
   "license": "MIT"
 }

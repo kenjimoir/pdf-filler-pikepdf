@@ -1,368 +1,292 @@
-// PDF Filler using pikepdf - Modern Python library for excellent Japanese text support
-// This service uses pikepdf (Python) instead of PDFtk for better Unicode and font handling
+// PDF Filler using pdf-lib - Reliable Japanese text support with automatic appearance updates
+// Based on school application form approach - proven to work without appearance issues
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
-const { exec, spawn } = require('child_process');
-const { promisify } = require('util');
+const { PDFDocument } = require('pdf-lib');
 const { google } = require('googleapis');
 
-const execAsync = promisify(exec);
-
-// Execute command with arguments array (safer than shell string)
-function execAsyncArray(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, {
-      ...options,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    
-    let stdout = '';
-    let stderr = '';
-    
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-    
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-    
-    proc.on('close', (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-      } else {
-        reject(new Error(`Command failed with code ${code}: ${stderr}`));
-      }
-    });
-    
-    proc.on('error', (error) => {
-      reject(error);
-    });
-  });
-}
-
-// Render.com uses port 10000 by default, Railway uses dynamic port
 const PORT = process.env.PORT || 8080;
-const TMP = path.join(os.tmpdir(), 'pdf-filler-pikepdf');
-const OUTPUT_FOLDER_ID = process.env.OUTPUT_FOLDER_ID;
+const TMP = path.join(os.tmpdir(), 'pdf-filler-pdflib');
+const OUTPUT_FOLDER_ID = process.env.OUTPUT_FOLDER_ID || '';
 
 // Ensure temp directory exists
-if (!fs.existsSync(TMP)) {
-  fs.mkdirSync(TMP, { recursive: true });
+function ensureDir(p) {
+  if (!fs.existsSync(p)) {
+    fs.mkdirSync(p, { recursive: true });
+  }
+}
+ensureDir(TMP);
+
+function log(...args) {
+  console.log(new Date().toISOString(), '-', ...args);
 }
 
-// Initialize Google Drive client
+// ---- Google Drive client (supports Shared Drives) ----
 function getDriveClient() {
-  // Option 1: JSON string in environment variable
+  // Option A: GOOGLE_CREDENTIALS_JSON (paste JSON into Render env var)
+  // Option B: GOOGLE_APPLICATION_CREDENTIALS (path to a mounted JSON file)
+  let credentials = null;
+  
   if (process.env.GOOGLE_CREDENTIALS_JSON) {
     try {
-      let credsJson = process.env.GOOGLE_CREDENTIALS_JSON;
-      
-      // Remove any leading/trailing whitespace
-      credsJson = credsJson.trim();
-      
-      // Log first few characters for debugging (without exposing sensitive data)
-      console.log('🔍 GOOGLE_CREDENTIALS_JSON length:', credsJson.length);
-      console.log('🔍 First 20 chars:', credsJson.substring(0, 20));
-      
-      const creds = JSON.parse(credsJson);
-      const auth = new google.auth.GoogleAuth({
-        credentials: creds,
-        scopes: ['https://www.googleapis.com/auth/drive'],
-      });
-      return google.drive({ version: 'v3', auth });
-    } catch (parseError) {
-      const jsonPreview = process.env.GOOGLE_CREDENTIALS_JSON?.substring(0, 100) || 'empty';
-      console.error('❌ JSON Parse Error:');
-      console.error('   Error:', parseError.message);
-      console.error('   Position:', parseError.message.match(/position (\d+)/)?.[1] || 'unknown');
-      console.error('   First 100 chars:', jsonPreview);
-      throw new Error(`Invalid GOOGLE_CREDENTIALS_JSON: ${parseError.message}. Please check that the JSON is correctly formatted and pasted in Render.com environment variables.`);
+      credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+    } catch (e) {
+      log('ERROR parsing GOOGLE_CREDENTIALS_JSON:', e && e.message);
+      throw new Error(`Invalid GOOGLE_CREDENTIALS_JSON: ${e.message}`);
     }
   }
   
-  // Option 2: File path in environment variable (Render file-based secrets)
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    const auth = new google.auth.GoogleAuth({
-      keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-      scopes: ['https://www.googleapis.com/auth/drive'],
-    });
-    return google.drive({ version: 'v3', auth });
-  }
+  const auth = new google.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/drive'],
+    ...(credentials ? { credentials } : {}) // fallback to ADC / GOOGLE_APPLICATION_CREDENTIALS
+  });
   
-  throw new Error('Either GOOGLE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS must be set');
+  return google.drive({ version: 'v3', auth });
 }
 
-// Fill PDF using pikepdf (Python) - Modern approach with better Unicode support
-async function fillPdfWithPikepdf(templatePath, outputPath, fields, opts) {
-  const options = Object.assign({ regenerate_appearances: true, flatten: false }, opts);
-  if (String(options.flattenMethod || '').toLowerCase() === 'none') {
-    options.flatten = false;
-  }
+// ---- Drive helpers ----
+async function downloadDriveFile(fileId, destPath) {
+  const drive = getDriveClient();
+  log('📥 Downloading template', fileId, '→', destPath);
   
-  console.log(`📝 Filling PDF with pikepdf...`);
-  console.log(`   Template: ${templatePath}`);
-  console.log(`   Output: ${outputPath}`);
-  console.log(`   Fields: ${Object.keys(fields).length}`);
-  
-  try {
-    // Prepare fields JSON (as string, will be passed as argument)
-    const fieldsJson = JSON.stringify(fields);
-    
-    // Build Python command arguments array (safer than shell string)
-    const pythonScript = path.join(__dirname, 'pdf_filler_pikepdf.py');
-    const cmdArgs = [
-      pythonScript,
-      templatePath,
-      outputPath,
-      '--fields', fieldsJson
-    ];
-    
-    if (options.regenerate_appearances) {
-      cmdArgs.push('--regenerate-appearances');
-    } else {
-      cmdArgs.push('--no-regenerate-appearances');
-    }
-    
-    if (options.flatten) {
-      cmdArgs.push('--flatten');
-    }
-    
-    console.log(`🔧 Running: python3 pdf_filler_pikepdf.py [template] [output] --fields [JSON]`);
-    
-    // Use spawn with array arguments (safer for special characters)
-    const { stdout, stderr } = await execAsyncArray('python3', cmdArgs, {
-      maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large outputs
-    });
-    
-    if (stdout) {
-      console.log(`📊 pikepdf output: ${stdout.trim()}`);
-      try {
-        const result = JSON.parse(stdout.split('\n').filter(l => l.trim().startsWith('{')).pop() || '{}');
-        if (result.filled_count !== undefined) {
-          console.log(`✅ Filled ${result.filled_count} fields`);
-        }
-      } catch (e) {
-        // Ignore JSON parse errors for stdout
-      }
-    }
-    
-    if (stderr && !stderr.includes('⚠️')) {
-      console.warn(`⚠️  pikepdf stderr: ${stderr}`);
-    }
-    
-    // Check if output file exists
-    if (!fs.existsSync(outputPath)) {
-      throw new Error('Output file was not created');
-    }
-    
-    const outputSize = fs.statSync(outputPath).size;
-    console.log(`✅ PDF filled successfully with pikepdf`);
-    console.log(`   Output size: ${outputSize} bytes`);
-    
-    return { success: true, size: outputSize, method: 'pikepdf' };
-    
-  } catch (error) {
-    console.error(`❌ pikepdf error: ${error.message}`);
-    throw new Error(`pikepdf failed: ${error.message}`);
-  }
-}
-
-// Upload to Google Drive
-async function uploadToDrive(drive, filePath, fileName, folderId) {
-  // If folderId is provided, verify it exists and is accessible
-  const finalFolderId = folderId || OUTPUT_FOLDER_ID;
-  if (finalFolderId) {
-    try {
-      await drive.files.get({
-        fileId: finalFolderId,
-        fields: 'id, name, mimeType',
-        supportsAllDrives: true,
-      });
-      console.log(`✅ Verified folder exists: ${finalFolderId}`);
-    } catch (error) {
-      if (error.code === 404) {
-        throw new Error(`Folder not found: ${finalFolderId}. Please check:\n1. Folder ID is correct\n2. Folder is shared with service account\n3. If in Shared Drive, service account has access`);
-      } else if (error.code === 403) {
-        throw new Error(`Access denied to folder: ${finalFolderId}. Please share the folder with your service account email.`);
-      }
-      throw error;
-    }
-  }
-  
-  const parents = finalFolderId ? [finalFolderId] : [];
-  
-  const fileMetadata = {
-    name: fileName,
-    parents: parents.length > 0 ? parents : undefined,
-  };
-  
-  const media = {
-    mimeType: 'application/pdf',
-    body: fs.createReadStream(filePath),
-  };
-  
-  const file = await drive.files.create({
-    requestBody: fileMetadata,
-    media: media,
-    fields: 'id, name, webViewLink, webContentLink',
+  // First check file metadata to see if it's a Google Doc
+  const meta = await drive.files.get({
+    fileId,
+    fields: 'id, name, mimeType',
     supportsAllDrives: true,
   });
   
-  return file.data;
-}
-
-// Check if pikepdf (Python) is available
-async function checkPikepdf() {
-  try {
-    const { stdout } = await execAsync('python3 -c "import pikepdf; print(pikepdf.__version__)"');
-    console.log(`✅ pikepdf found: ${stdout.trim()}`);
-    return true;
-  } catch (error) {
-    console.error(`❌ pikepdf not found: ${error.message}`);
-    return false;
+  if (meta.data.mimeType && meta.data.mimeType.startsWith('application/vnd.google-apps')) {
+    // Google Doc - export as PDF
+    const res = await drive.files.export(
+      { fileId, mimeType: 'application/pdf' },
+      { responseType: 'stream' }
+    );
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(destPath);
+      res.data.on('error', reject).pipe(out).on('finish', resolve);
+    });
+  } else {
+    // Binary PDF file
+    const res = await drive.files.get(
+      { fileId, alt: 'media', supportsAllDrives: true },
+      { responseType: 'stream' }
+    );
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(destPath);
+      res.data.on('error', reject).pipe(out).on('finish', resolve);
+    });
   }
+  
+  return destPath;
 }
 
-// HTTP Server
+async function uploadToDrive(localPath, name, parentId) {
+  /**
+   * Upload localPath to Drive.
+   * - If parentId is provided (from request), it is used.
+   * - Else if OUTPUT_FOLDER_ID env is set, it is used.
+   * - Else it uploads to My Drive root of the service account.
+   */
+  const drive = getDriveClient();
+  
+  const parents =
+    parentId ? [parentId] :
+    (OUTPUT_FOLDER_ID ? [OUTPUT_FOLDER_ID] : undefined);
+  
+  const fileMetadata = { name, parents };
+  
+  const media = { mimeType: 'application/pdf', body: fs.createReadStream(localPath) };
+  
+  const res = await drive.files.create({
+    requestBody: fileMetadata,
+    media,
+    fields: 'id, name, webViewLink, parents',
+    supportsAllDrives: true
+  });
+  
+  return res.data;
+}
+
+// ---- PDF fill (handles text / checkbox / radio / dropdown) ----
+async function fillPdf(srcPath, outPath, fields = {}) {
+  log('📝 Filling PDF with', Object.keys(fields).length, 'fields');
+  
+  const bytes = fs.readFileSync(srcPath);
+  
+  // CRITICAL: updateFieldAppearances: true ensures appearances are generated on load
+  const pdfDoc = await PDFDocument.load(bytes, { updateFieldAppearances: true });
+  
+  let filled = 0;
+  let form = null;
+  
+  try {
+    form = pdfDoc.getForm();
+  } catch (_) {
+    log('⚠️  PDF has no form fields');
+  }
+  
+  if (form) {
+    for (const [key, rawVal] of Object.entries(fields)) {
+      try {
+        const f = form.getField(String(key));
+        const typeName = (f && f.constructor && f.constructor.name) || '';
+        const val = rawVal == null ? '' : String(rawVal);
+        
+        if (typeName.includes('Text')) {
+          f.setText(val);
+          filled++;
+        } else if (typeName.includes('Check')) {
+          const on = val.toLowerCase();
+          if (on === 'true' || on === 'yes' || on === '1' || on === 'on') {
+            f.check();
+          } else {
+            f.uncheck();
+          }
+          filled++;
+        } else if (typeName.includes('Radio')) {
+          try {
+            f.select(val);
+            filled++;
+          } catch (_) {
+            // Radio value not found - skip
+          }
+        } else if (typeName.includes('Dropdown')) {
+          try {
+            f.select(val);
+            filled++;
+          } catch (_) {
+            // Dropdown value not found - skip
+          }
+        }
+      } catch (_) {
+        // Field not found — ignore missing field
+      }
+    }
+    
+    // CRITICAL: Update field appearances after setting all values
+    // This ensures checkboxes/radios are visually displayed
+    try {
+      form.updateFieldAppearances();
+    } catch (e) {
+      log('⚠️  updateFieldAppearances failed:', e.message);
+    }
+  }
+  
+  const outBytes = await pdfDoc.save();
+  fs.writeFileSync(outPath, outBytes);
+  
+  log(`✅ Filled ${filled} fields, output size: ${outBytes.length} bytes`);
+  
+  return { outPath, filled, size: outBytes.length };
+}
+
+// ---- HTTP server ----
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-app.get('/', (_req, res) => {
-  res.json({ service: 'PDF Filler (pikepdf)', status: 'running' });
+app.get('/', (req, res) => {
+  res.type('text/plain').send('PDF filler is up. Try GET /health');
 });
 
-app.get('/health', async (_req, res) => {
-  const pikepdfAvailable = await checkPikepdf();
+app.get('/health', (req, res) => {
   res.json({
     ok: true,
-    pikepdfAvailable,
-    method: 'pikepdf',
-    outputFolder: OUTPUT_FOLDER_ID || 'not set',
-    tempDir: TMP,
+    method: 'pdf-lib',
+    tmpDir: TMP,
+    hasOUTPUT_FOLDER_ID: !!OUTPUT_FOLDER_ID,
+    credMode: process.env.GOOGLE_CREDENTIALS_JSON
+      ? 'env-json'
+      : (process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'file-path' : 'adc/unknown')
   });
 });
 
-app.post('/fill', async (req, res) => {
-  const { templateFileId, fields, outputName, folderId, mode, flattenMethod } = req.body;
-  
-  if (!templateFileId || !fields) {
-    return res.status(400).json({ error: 'Missing templateFileId or fields' });
-  }
-  
-  // Check if pikepdf is available
-  const pikepdfAvailable = await checkPikepdf();
-  if (!pikepdfAvailable) {
-    return res.status(500).json({ 
-      error: 'pikepdf not available', 
-      detail: 'pikepdf (Python) is required but not installed on this system' 
-    });
-  }
-  
-  const drive = getDriveClient();
-  const templatePath = path.join(TMP, `template_${templateFileId}.pdf`);
-  const outputPath = path.join(TMP, `output_${Date.now()}.pdf`);
-  
+// GET /fields?fileId=XXXXXXXX — lists PDF form field names
+app.get('/fields', async (req, res) => {
   try {
-    // 0. Inspect template metadata
-    const meta = await drive.files.get({
-      fileId: templateFileId,
-      fields: 'id, name, mimeType, size, owners(emailAddress)',
-      supportsAllDrives: true,
-    });
-    console.log(`📄 Template meta: name=${meta.data.name} mime=${meta.data.mimeType} size=${meta.data.size}`);
+    const fileId = (req.query.fileId || '').trim();
+    if (!fileId) {
+      return res.status(400).json({ error: 'fileId is required' });
+    }
+    
+    const localPath = path.join(TMP, `template_${fileId}.pdf`);
+    await downloadDriveFile(fileId, localPath);
+    
+    const bytes = fs.readFileSync(localPath);
+    const pdfDoc = await PDFDocument.load(bytes);
+    
+    let names = [];
+    try {
+      const form = pdfDoc.getForm();
+      const fields = form ? form.getFields() : [];
+      names = fields.map(f => f.getName());
+    } catch (_) {
+      // No form fields
+    }
+    
+    res.json({ count: names.length, names });
+  } catch (e) {
+    log('❌ List fields failed:', e && (e.stack || e));
+    res.status(500).json({ error: 'List fields failed', detail: e && (e.message || String(e)) });
+  }
+});
 
-    // 1. Download template (export if it's a Google Doc)
-    console.log(`📥 Downloading template: ${templateFileId}`);
-    if (meta.data.mimeType && meta.data.mimeType.startsWith('application/vnd.google-apps')) {
-      // Not a binary PDF on Drive → export as PDF
-      const exportRes = await drive.files.export(
-        { fileId: templateFileId, mimeType: 'application/pdf' },
-        { responseType: 'stream' }
-      );
-      const writeStream = fs.createWriteStream(templatePath);
-      exportRes.data.pipe(writeStream);
-      await new Promise((resolve, reject) => {
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-      });
-    } else {
-      const templateFile = await drive.files.get(
-        { fileId: templateFileId, alt: 'media', supportsAllDrives: true },
-        { responseType: 'stream' }
-      );
-      const writeStream = fs.createWriteStream(templatePath);
-      templateFile.data.pipe(writeStream);
-      await new Promise((resolve, reject) => {
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-      });
-    }
-    console.log('✅ Template downloaded');
+// POST /fill
+// body: { templateFileId: "<Drive file id>", fields: {...}, outputName?: "baseName", folderId?: "<Drive folder id>" }
+app.post('/fill', async (req, res) => {
+  try {
+    const { templateFileId, fields, outputName, folderId } = req.body || {};
     
-    const modeStr = String(mode || 'final').toLowerCase();
-    if (modeStr === 'copy') {
-      // Just pass-through the template to output (sanity check)
-      console.log('🧪 COPY mode: uploading template as-is');
-      fs.copyFileSync(templatePath, outputPath);
-    } else {
-      // 2. Fill PDF with pikepdf
-      console.log(`📝 Filling PDF with ${Object.keys(fields).length} fields...`);
-      const flatten = modeStr !== 'preview';
-      const fm = String(flattenMethod || 'none').toLowerCase();
-      
-      await fillPdfWithPikepdf(templatePath, outputPath, fields, { 
-        flatten: flatten,
-        flattenMethod: fm,
-        regenerate_appearances: true 
-      });
+    if (!templateFileId) {
+      return res.status(400).json({ error: 'templateFileId is required' });
     }
     
-    // 3. Upload to Drive
-    const finalName = outputName || `filled_${Date.now()}.pdf`;
-    console.log(`📤 Uploading to Drive: ${finalName}`);
-    const uploadedFile = await uploadToDrive(
-      drive,
-      outputPath,
-      finalName,
-      folderId || OUTPUT_FOLDER_ID
-    );
+    if (!fields) {
+      return res.status(400).json({ error: 'fields is required' });
+    }
+    
+    // 1) Download template → 2) Fill → 3) Upload to Drive
+    const tmpTemplate = path.join(TMP, `template_${templateFileId}.pdf`);
+    await downloadDriveFile(templateFileId, tmpTemplate);
+    
+    const base = (outputName && String(outputName).trim()) || `filled_${Date.now()}`;
+    const outName = base.toLowerCase().endsWith('.pdf') ? base : `${base}.pdf`;
+    const outPath = path.join(TMP, outName);
+    
+    const result = await fillPdf(tmpTemplate, outPath, fields || {});
+    
+    log(`📤 Uploading to Drive: ${outName}`);
+    const uploaded = await uploadToDrive(result.outPath, outName, folderId);
+    
+    log('✅ Uploaded to Drive:', uploaded.id);
     
     // Cleanup
     try {
-      if (fs.existsSync(templatePath)) {
-        fs.unlinkSync(templatePath);
-      }
-      if (fs.existsSync(outputPath)) {
-        fs.unlinkSync(outputPath);
-      }
+      if (fs.existsSync(tmpTemplate)) fs.unlinkSync(tmpTemplate);
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
     } catch (cleanupError) {
-      console.warn(`⚠️ Cleanup failed: ${cleanupError.message}`);
+      log('⚠️  Cleanup failed:', cleanupError.message);
     }
     
     res.json({
       ok: true,
-      driveFile: uploadedFile,
-      method: 'pikepdf',
+      filledCount: result.filled,
+      driveFile: uploaded
     });
-    
-  } catch (error) {
-    console.error('❌ Error:', error);
-    res.status(500).json({
-      error: 'Fill failed',
-      detail: error.message,
-    });
+  } catch (err) {
+    log('❌ ERROR /fill:', err && (err.stack || err));
+    res.status(500).json({ error: 'Fill failed', detail: err && (err.message || String(err)) });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 PDF Filler (pikepdf) running on port ${PORT}`);
-  console.log(`   Temp directory: ${TMP}`);
-  console.log(`   Output folder: ${OUTPUT_FOLDER_ID || 'not set'}`);
+  log(`🚀 Server listening on ${PORT}`);
+  log(`   OUTPUT_FOLDER_ID (fallback): ${OUTPUT_FOLDER_ID || '(none set)'}`);
+  log(`   Creds: ${process.env.GOOGLE_CREDENTIALS_JSON ? 'GOOGLE_CREDENTIALS_JSON' :
+              (process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'GOOGLE_APPLICATION_CREDENTIALS' : 'ADC/unknown')}`);
 });
-
