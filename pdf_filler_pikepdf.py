@@ -228,11 +228,14 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                 # Radio group: pick widget that matches provided value
                 widget, on_name = choose_radio_widget_by_value(widgets, str(value) if value is not None else "")
                 
+                widgets_without_ap = False
                 if widget and on_name:
                     field_dict["/V"] = on_name
                     # set selected widget to on_name, others to /Off
                     for ww in widgets:
                         ww["/AS"] = on_name if ww is widget else Name("/Off")
+                        if "/AP" not in ww:
+                            widgets_without_ap = True
                     filled += 1
                 else:
                     # Try fallback: use value directly as name if widgets have /AP
@@ -259,35 +262,40 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                         field_dict["/V"] = fallback_name
                         for ww in widgets:
                             ww["/AS"] = fallback_name if ww is found_widget else Name("/Off")
+                            if "/AP" not in ww:
+                                widgets_without_ap = True
                         filled += 1
                     else:
                         skipped.append(raw_name)
+                
+                # If any widget lacks /AP, set NeedAppearances flag
+                if widgets_without_ap:
+                    acro["/NeedAppearances"] = True
+                
                 continue
             
             # Checkbox
             on_state = first_on_state(widgets) or Name("/Yes")
             
-            # Ensure /AS is set on all widgets, even if /AP doesn't exist
-            # This ensures the appearance state is set for PDF viewers to display
+            # Ensure /AS is set on all widgets
+            # If widget doesn't have /AP, we need to set NeedAppearances flag
+            widgets_without_ap = False
             if str_to_bool(value):
                 field_dict["/V"] = on_state
                 for ww in widgets:
                     ww["/AS"] = on_state
-                    # Also ensure /AP exists - if not, PDF viewer may not display correctly
                     if "/AP" not in ww:
-                        # Try to get /AP from field if widget doesn't have it
-                        field_ap = field_dict.get("/AP")
-                        if field_ap:
-                            ww["/AP"] = field_ap
+                        widgets_without_ap = True
             else:
                 field_dict["/V"] = Name("/Off")
                 for ww in widgets:
                     ww["/AS"] = Name("/Off")
-                    # Also ensure /AP exists
                     if "/AP" not in ww:
-                        field_ap = field_dict.get("/AP")
-                        if field_ap:
-                            ww["/AP"] = field_ap
+                        widgets_without_ap = True
+            
+            # If any widget lacks /AP, set NeedAppearances flag so PDF viewer generates it
+            if widgets_without_ap:
+                acro["/NeedAppearances"] = True
             
             filled += 1
             continue
