@@ -255,11 +255,47 @@ def check_and_fix_appearances(pdf):
     """
     Check for missing /AP (Appearance) dictionaries in annotations (following IT consultant's advice).
     Check annotations on pages, not fields directly.
+    If /AP is missing, remove it from the corresponding field to force regeneration.
     Returns tuple: (needs_fix, fixed_count)
     """
     try:
         needs_fix = False
         fixed_count = 0
+        
+        # Get AcroForm to find fields
+        acro_form = pdf.Root.get('/AcroForm')
+        if not acro_form:
+            return False, 0
+        
+        # Build a map of field names to field objects for quick lookup
+        field_map = {}
+        def collect_field_map(field_ref, prefix=''):
+            field = field_ref
+            field_type = field.get('/FT')
+            field_name_raw = field.get('/T')
+            
+            field_name = None
+            if field_name_raw:
+                if isinstance(field_name_raw, String):
+                    field_name = str(field_name_raw)
+                elif hasattr(field_name_raw, '__str__'):
+                    field_name = str(field_name_raw)
+            
+            if field_type and field_name:
+                full_name = f"{prefix}.{field_name}" if prefix else field_name
+                field_map[full_name] = field_ref
+            
+            kids = field.get('/Kids', [])
+            for kid in kids:
+                if isinstance(kid, Object):
+                    new_prefix = f"{prefix}.{field_name}" if prefix else (field_name or '')
+                    if new_prefix:
+                        collect_field_map(kid, new_prefix)
+        
+        fields_array = acro_form.get('/Fields', [])
+        for field_ref in fields_array:
+            if isinstance(field_ref, Object):
+                collect_field_map(field_ref)
         
         # IT顧問のアドバイスに従い、ページ上のアノテーションをチェック
         for page_num, page in enumerate(pdf.pages):
@@ -285,6 +321,17 @@ def check_and_fix_appearances(pdf):
                             else:
                                 annot_field_name = f'Page{page_num + 1}_Annot{fixed_count}'
                             
+                            # Find corresponding field and remove /AP to force regeneration
+                            if annot_field_name in field_map:
+                                field = field_map[annot_field_name]
+                                if '/AP' in field:
+                                    del field['/AP']
+                                    print(f"✅ Removed /AP from field '{annot_field_name}' to force regeneration")
+                                elif field.get('/FT') == Name('/Btn'):
+                                    # For button fields, ensure /V and /AS are set
+                                    # The NeedAppearances flag will trigger regeneration
+                                    pass
+                            
                             needs_fix = True
                             fixed_count += 1
                             print(f"⚠️  Annotation missing /AP: {annot_field_name}")
@@ -296,6 +343,8 @@ def check_and_fix_appearances(pdf):
         
     except Exception as e:
         print(f"⚠️  Error checking appearances: {e}")
+        import traceback
+        traceback.print_exc()
         return False, 0
 
 
@@ -458,9 +507,10 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                     field['/V'] = state_name
                     field['/AS'] = state_name
                 
-                # IT顧問のアドバイスに従い、手動でAppearanceを生成しない
-                # 代わりに、NeedAppearancesフラグを設定してPDFビューアーに自動生成させる
-                # アノテーションはフィールド埋め込み後にチェックする
+                # Remove /AP from field to force PDF viewer to regenerate appearance
+                # This follows IT consultant's advice: remove /AP to trigger regeneration
+                if '/AP' in field:
+                    del field['/AP']
                 
                 filled_count += 1
                 
