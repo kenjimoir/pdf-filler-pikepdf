@@ -130,9 +130,11 @@ Q
             stream_bytes = stream_content.encode('latin-1')
             
             # Create stream object using pikepdf's make_stream
+            # This already belongs to the PDF object graph
             appearance_stream = pdf.make_stream(stream_bytes)
             
-            # Create appearance dictionary (use dict instead of Dictionary)
+            # Create appearance dictionary directly (don't use make_indirect)
+            # The stream is already in the PDF object graph, so we can reference it directly
             appearance_dict = {
                 Name('/N'): appearance_stream  # Normal appearance
             }
@@ -225,9 +227,11 @@ Q
             stream_bytes = stream_content.encode('latin-1')
             
             # Create stream object using pikepdf's make_stream
+            # This already belongs to the PDF object graph
             appearance_stream = pdf.make_stream(stream_bytes)
             
-            # Create appearance dictionary (use dict instead of Dictionary)
+            # Create appearance dictionary directly (don't use make_indirect)
+            # The stream is already in the PDF object graph, so we can reference it directly
             appearance_dict = {
                 Name('/N'): appearance_stream  # Normal appearance
             }
@@ -528,7 +532,19 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                             appearance = create_radio_appearance(pdf, rect_array, state_name)
                         
                         if appearance:
-                            field['/AP'] = appearance
+                            # Set /AP dictionary directly
+                            # Get the stream from appearance dict
+                            appearance_stream = appearance[Name('/N')]
+                            
+                            # Create /AP dictionary using pikepdf's Dictionary
+                            # Remove existing /AP if present
+                            if '/AP' in field:
+                                del field['/AP']
+                            
+                            # Create new /AP dictionary with /N key
+                            field['/AP'] = Dictionary({
+                                Name('/N'): appearance_stream
+                            })
                             print(f"✅ Created appearance for {field_name}")
                     except Exception as e:
                         print(f"⚠️  Could not create appearance for {field_name}: {e}")
