@@ -27,14 +27,28 @@ function getDriveClient() {
   // Option 1: JSON string in environment variable
   if (process.env.GOOGLE_CREDENTIALS_JSON) {
     try {
-      const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+      let credsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+      
+      // Remove any leading/trailing whitespace
+      credsJson = credsJson.trim();
+      
+      // Log first few characters for debugging (without exposing sensitive data)
+      console.log('🔍 GOOGLE_CREDENTIALS_JSON length:', credsJson.length);
+      console.log('🔍 First 20 chars:', credsJson.substring(0, 20));
+      
+      const creds = JSON.parse(credsJson);
       const auth = new google.auth.GoogleAuth({
         credentials: creds,
         scopes: ['https://www.googleapis.com/auth/drive'],
       });
       return google.drive({ version: 'v3', auth });
     } catch (parseError) {
-      throw new Error(`Invalid GOOGLE_CREDENTIALS_JSON: ${parseError.message}`);
+      const jsonPreview = process.env.GOOGLE_CREDENTIALS_JSON?.substring(0, 100) || 'empty';
+      console.error('❌ JSON Parse Error:');
+      console.error('   Error:', parseError.message);
+      console.error('   Position:', parseError.message.match(/position (\d+)/)?.[1] || 'unknown');
+      console.error('   First 100 chars:', jsonPreview);
+      throw new Error(`Invalid GOOGLE_CREDENTIALS_JSON: ${parseError.message}. Please check that the JSON is correctly formatted and pasted in Render.com environment variables.`);
     }
   }
   
