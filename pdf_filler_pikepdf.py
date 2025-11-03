@@ -43,6 +43,142 @@ def ensure_pdf_name(value):
     return Name('/' + value_str)
 
 
+def create_checkbox_appearance(pdf, field, state_name):
+    """Create appearance stream for checkbox field"""
+    try:
+        # Get field rectangle (bounding box)
+        rect = field.get('/Rect')
+        if not rect or len(rect) < 4:
+            return None
+        
+        # Get rectangle coordinates
+        x0, y0, x1, y1 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+        width = x1 - x0
+        height = y1 - y0
+        
+        # Ensure we have valid dimensions
+        if width <= 0 or height <= 0:
+            return None
+        
+        # Create appearance stream
+        # Simple checkbox appearance: border + checkmark if checked
+        if state_name == Name('/Off'):
+            # Unchecked: just border
+            stream_content = f"""q
+0.0 0.0 0.0 rg
+{width} 0 0 {height} 0 0 cm
+0.5 w
+0 0 m
+{width} 0 l
+{width} {height} l
+0 {height} l
+0 0 l
+S
+Q
+"""
+        else:
+            # Checked: border + checkmark
+            # Draw checkmark using simple lines
+            check_size = min(width, height) * 0.6
+            check_x = width * 0.3
+            check_y = height * 0.5
+            check_thickness = min(width, height) * 0.15
+            
+            stream_content = f"""q
+0.0 0.0 0.0 rg
+{width} 0 0 {height} 0 0 cm
+0.5 w
+0 0 m
+{width} 0 l
+{width} {height} l
+0 {height} l
+0 0 l
+S
+{check_thickness} w
+{check_x} {check_y} m
+{check_x - check_size*0.3} {check_y - check_size*0.2} l
+{check_x + check_size*0.3} {check_y + check_size*0.2} l
+S
+{check_x} {check_y} m
+{check_x + check_size*0.3} {check_y + check_size*0.2} l
+S
+Q
+"""
+        
+        # Create appearance dictionary
+        appearance_stream = pdf.make_stream(stream_content.encode('latin-1'))
+        appearance_dict = Dictionary({
+            Name('/N'): appearance_stream  # Normal appearance
+        })
+        
+        return appearance_dict
+        
+    except Exception as e:
+        print(f"⚠️  Error creating checkbox appearance: {e}")
+        return None
+
+
+def create_radio_appearance(pdf, field, state_name):
+    """Create appearance stream for radio button field"""
+    try:
+        # Get field rectangle (bounding box)
+        rect = field.get('/Rect')
+        if not rect or len(rect) < 4:
+            return None
+        
+        # Get rectangle coordinates
+        x0, y0, x1, y1 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+        width = x1 - x0
+        height = y1 - y0
+        
+        # Ensure we have valid dimensions
+        if width <= 0 or height <= 0:
+            return None
+        
+        # Calculate center and radius
+        center_x = width / 2
+        center_y = height / 2
+        radius = min(width, height) / 2 - 2
+        
+        # Create appearance stream
+        if state_name == Name('/Off'):
+            # Unchecked: just circle border
+            stream_content = f"""q
+0.0 0.0 0.0 rg
+{width} 0 0 {height} 0 0 cm
+0.5 w
+{center_x} {center_y} {radius} 0 360 arc
+S
+Q
+"""
+        else:
+            # Checked: circle border + filled center
+            inner_radius = radius * 0.6
+            stream_content = f"""q
+0.0 0.0 0.0 rg
+{width} 0 0 {height} 0 0 cm
+0.5 w
+{center_x} {center_y} {radius} 0 360 arc
+S
+0.5 g
+{center_x} {center_y} {inner_radius} 0 360 arc
+f
+Q
+"""
+        
+        # Create appearance dictionary
+        appearance_stream = pdf.make_stream(stream_content.encode('latin-1'))
+        appearance_dict = Dictionary({
+            Name('/N'): appearance_stream  # Normal appearance
+        })
+        
+        return appearance_dict
+        
+    except Exception as e:
+        print(f"⚠️  Error creating radio appearance: {e}")
+        return None
+
+
 def check_and_fix_appearances(pdf):
     """
     Check for missing /AP (Appearance) dictionaries in form fields
@@ -234,6 +370,7 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                 
                 value_str = str(value).lower()
                 
+                state_name = None
                 if is_checkbox:
                     # Checkbox
                     if value_str in ('on', 'true', '1', 'yes'):
@@ -248,21 +385,65 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                                 elif isinstance(opt_val, Array) and len(opt_val) > 0:
                                     on_value = str(opt_val[0])
                         # Ensure Name object starts with '/'
-                        field['/V'] = ensure_pdf_name(on_value)
-                        field['/AS'] = ensure_pdf_name(on_value)
+                        state_name = ensure_pdf_name(on_value)
+                        field['/V'] = state_name
+                        field['/AS'] = state_name
                     else:
-                        field['/V'] = ensure_pdf_name('Off')
-                        field['/AS'] = ensure_pdf_name('Off')
+                        state_name = ensure_pdf_name('Off')
+                        field['/V'] = state_name
+                        field['/AS'] = state_name
                 else:
                     # Radio button - value should match export value (convert to name)
                     # Use value as-is but ensure it's a Name object starting with '/'
                     export_value = value_str
-                    field['/V'] = ensure_pdf_name(export_value)
-                    field['/AS'] = ensure_pdf_name(export_value)
+                    state_name = ensure_pdf_name(export_value)
+                    field['/V'] = state_name
+                    field['/AS'] = state_name
                 
-                # Remove /AP to force regeneration
-                if '/AP' in field:
-                    del field['/AP']
+                # Create appearance stream for button fields
+                # Get Rect from field's Kids (annotations) or from field itself
+                rect = None
+                kids = field.get('/Kids', [])
+                if kids and len(kids) > 0:
+                    # Try to get Rect from first annotation
+                    for kid in kids:
+                        if isinstance(kid, Object):
+                            kid_rect = kid.get('/Rect')
+                            if kid_rect:
+                                rect = kid_rect
+                                break
+                
+                # If no Rect from Kids, try field itself
+                if not rect:
+                    rect = field.get('/Rect')
+                
+                # If we have Rect, create appearance
+                if rect and len(rect) >= 4:
+                    # Temporarily set Rect on field for appearance creation
+                    original_rect = field.get('/Rect')
+                    if not original_rect:
+                        field['/Rect'] = rect
+                    
+                    try:
+                        if is_checkbox:
+                            appearance = create_checkbox_appearance(pdf, field, state_name)
+                        else:
+                            appearance = create_radio_appearance(pdf, field, state_name)
+                        
+                        if appearance:
+                            field['/AP'] = appearance
+                            print(f"✅ Created appearance for {field_name}")
+                    except Exception as e:
+                        print(f"⚠️  Could not create appearance for {field_name}: {e}")
+                    
+                    # Restore original Rect if we modified it
+                    if not original_rect and '/Rect' in field:
+                        del field['/Rect']
+                else:
+                    # No Rect available, remove /AP to let viewer regenerate
+                    if '/AP' in field:
+                        del field['/AP']
+                
                 filled_count += 1
                 
             else:
