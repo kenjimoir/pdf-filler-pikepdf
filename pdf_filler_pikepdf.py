@@ -536,15 +536,14 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
                             # Get the stream from appearance dict
                             appearance_stream = appearance[Name('/N')]
                             
-                            # Create /AP dictionary using pikepdf's Dictionary
                             # Remove existing /AP if present
                             if '/AP' in field:
                                 del field['/AP']
                             
-                            # Create new /AP dictionary with /N key
-                            field['/AP'] = Dictionary({
-                                Name('/N'): appearance_stream
-                            })
+                            # Create new /AP dictionary step by step
+                            # First create empty dict, then add /N key
+                            field['/AP'] = {}
+                            field['/AP'][Name('/N')] = appearance_stream
                             print(f"✅ Created appearance for {field_name}")
                     except Exception as e:
                         print(f"⚠️  Could not create appearance for {field_name}: {e}")
