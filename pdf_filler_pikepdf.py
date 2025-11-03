@@ -267,14 +267,27 @@ def fill_pdf_with_pikepdf(template_path, output_path, fields, options=None):
             # Checkbox
             on_state = first_on_state(widgets) or Name("/Yes")
             
+            # Ensure /AS is set on all widgets, even if /AP doesn't exist
+            # This ensures the appearance state is set for PDF viewers to display
             if str_to_bool(value):
                 field_dict["/V"] = on_state
                 for ww in widgets:
                     ww["/AS"] = on_state
+                    # Also ensure /AP exists - if not, PDF viewer may not display correctly
+                    if "/AP" not in ww:
+                        # Try to get /AP from field if widget doesn't have it
+                        field_ap = field_dict.get("/AP")
+                        if field_ap:
+                            ww["/AP"] = field_ap
             else:
                 field_dict["/V"] = Name("/Off")
                 for ww in widgets:
                     ww["/AS"] = Name("/Off")
+                    # Also ensure /AP exists
+                    if "/AP" not in ww:
+                        field_ap = field_dict.get("/AP")
+                        if field_ap:
+                            ww["/AP"] = field_ap
             
             filled += 1
             continue
